@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pycache/
+*.pytest_cache/
+.python-version
+venv/
+ENV/
+env/
+.venv/
+
+# Virtual environment
+venv/
+backend/venv/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+.env.example
+
+# Database / storage
+*.sqlite3
+backend/storage/chroma/
+backend/storage/uploads/
+backend/storage/*.sqlite3
+
+# Editor settings
+.vscode/
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+
+# Temp files
+*.tmp
+*.temp
+*~
+
+# OS generated files
+Thumbs.db
+
+*.db

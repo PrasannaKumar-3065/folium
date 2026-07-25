@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EduAI — Knowledge Library MVP</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header>
+  <h1>EduAI Knowledge Library</h1>
+  <nav>
+    <button id="nav-upload" class="nav-btn active" type="button">Upload Books</button>
+    <button id="nav-ask" class="nav-btn" type="button">Ask AI Tutor</button>
+    <button id="nav-papers" class="nav-btn" type="button">Question Papers</button>
+    <button id="nav-bank" class="nav-btn" type="button">Question Bank</button>
+  </nav>
+</header>
+
+<main>
+
+  <section id="view-upload">
+    <h2>Upload Textbooks (PDF)</h2>
+    <form id="upload-form">
+      <label>
+        PDF file(s)
+        <input type="file" id="file-input" accept="application/pdf" multiple required>
+      </label>
+      <label>
+        Standard (optional)
+        <input type="text" id="standard-input" placeholder="e.g. Std 11">
+      </label>
+      <label>
+        Subject (optional)
+        <input type="text" id="subject-input" placeholder="e.g. Physics">
+      </label>
+      <button type="submit">Upload</button>
+    </form>
+    <p id="upload-message"></p>
+
+    <h2>Uploaded Documents</h2>
+    <button id="refresh-docs" type="button">Refresh</button>
+    <table id="docs-table">
+      <thead>
+        <tr>
+          <th>Filename</th>
+          <th>Standard</th>
+          <th>Subject</th>
+          <th>Status</th>
+          <th>Chunks</th>
+          <th>Pages</th>
+          <th>Chapters</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="docs-tbody">
+        <tr><td colspan="8">No documents uploaded yet.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="view-ask" class="hidden">
+    <h2>Ask the AI Tutor</h2>
+    <form id="ask-form">
+      <label>
+        Question
+        <textarea id="question-input" rows="3" required placeholder="e.g. What is the difference between mitosis and meiosis?"></textarea>
+      </label>
+      <div class="filters">
+        <label>Standard (optional) <input type="text" id="ask-standard-input" placeholder="e.g. Std 11"></label>
+        <label>Subject (optional) <input type="text" id="ask-subject-input" placeholder="e.g. Biology"></label>
+      </div>
+      <button type="submit">Ask</button>
+    </form>
+    <div id="ask-results"></div>
+  </section>
+
+  <section id="view-papers" class="hidden">
+    <h2>Generate a Question Paper</h2>
+    <form id="paper-form">
+      <label>
+        Book
+        <select id="paper-doc-select" required></select>
+      </label>
+      <div id="paper-chapters-field">
+        <span class="field-label">Chapters to include</span>
+        <div id="paper-chapters-list" class="chapter-checkboxes">Pick a book first.</div>
+      </div>
+      <label>
+        Total number of questions
+        <input type="number" id="paper-total-questions" min="1" value="20" required>
+      </label>
+      <label>
+        Total marks (optional — defaults to 1 mark per question)
+        <input type="number" id="paper-total-marks" min="1" placeholder="e.g. 20">
+      </label>
+      <div class="filters">
+        <label>Difficulty
+          <select id="paper-difficulty">
+            <option value="easy">Easy</option>
+            <option value="balanced" selected>Balanced</option>
+            <option value="challenging">Challenging</option>
+          </select>
+        </label>
+        <label>Pass percentage
+          <input type="number" id="paper-pass-percentage" min="1" max="100" value="40" required>
+        </label>
+      </div>
+      <fieldset class="distribution-fieldset">
+        <legend>How should questions be split across chapters?</legend>
+        <label class="radio-label">
+          <input type="radio" name="distribution" value="equal" checked>
+          Equal — same number of questions from every selected chapter
+        </label>
+        <label class="radio-label">
+          <input type="radio" name="distribution" value="random">
+          Random — still guarantees every chapter enough questions that mastering
+          just that one chapter can reach the pass score, then splits the rest randomly
+        </label>
+      </fieldset>
+      <button type="submit">Generate Questions</button>
+    </form>
+    <p id="paper-message"></p>
+
+    <div id="paper-result" class="hidden"></div>
+
+    <h2>Past Question Papers</h2>
+    <button id="refresh-papers" type="button">Refresh</button>
+    <table id="papers-table">
+      <thead>
+        <tr>
+          <th>Book</th>
+          <th>Questions</th>
+          <th>Pass %</th>
+          <th>Mode</th>
+          <th>Status</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="papers-tbody">
+        <tr><td colspan="6">No question papers yet.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="view-bank" class="hidden">
+    <h2>Question Bank</h2>
+    <p class="hint">Every question you accept (or, later, write manually) lands here so it can be reused in future papers.</p>
+    <div class="filters">
+      <label>Book
+        <select id="bank-doc-filter">
+          <option value="">All books</option>
+        </select>
+      </label>
+      <label>Chapter
+        <select id="bank-chapter-filter">
+          <option value="">All chapters</option>
+        </select>
+      </label>
+      <label>Difficulty
+        <select id="bank-difficulty-filter">
+          <option value="">Any</option>
+          <option value="Easy">Easy</option>
+          <option value="Medium">Medium</option>
+          <option value="Hard">Hard</option>
+        </select>
+      </label>
+      <label>Add to paper
+        <select id="bank-target-paper"></select>
+      </label>
+    </div>
+    <div id="bank-list">Loading…</div>
+  </section>
+
+</main>
+
+<script src="script.js"></script>
+</body>
+</html>
