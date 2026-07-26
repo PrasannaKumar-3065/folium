@@ -45,3 +45,5 @@ backend/storage/*.sqlite3
 Thumbs.db
 
 *.db
+
+node_modules/

@@ -424,3 +424,72 @@ th {
   align-items: center;
   gap: 8px !important;
 }
+
+.export-links {
+  display: flex;
+  gap: 10px;
+  margin: 10px 0;
+}
+
+.export-link {
+  display: inline-block;
+  background: #0f766e;
+  color: #fff;
+  text-decoration: none;
+  padding: 7px 14px;
+  border-radius: 4px;
+  font-size: 0.82rem;
+}
+
+.export-link:hover {
+  background: #115e59;
+}
+
+.export-link-key {
+  background: #92400e;
+}
+
+.export-link-key:hover {
+  background: #78350f;
+}
+
+.layout-panel {
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin: 10px 0;
+  background: #fafafa;
+}
+
+.layout-panel summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.layout-panel form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.layout-message {
+  font-size: 0.78rem;
+  color: #166534;
+  min-height: 1em;
+  margin: 0;
+}
+
+.manual-add-card {
+  border-top: 1px dashed #ccc;
+  padding: 14px 0;
+}
+
+#show-manual-form-btn {
+  background: #0891b2;
+}
+
+#show-manual-form-btn:hover {
+  background: #0e7490;
+}

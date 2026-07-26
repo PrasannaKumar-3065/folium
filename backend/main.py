@@ -12,10 +12,13 @@ Endpoints:
   GET    /api/question-papers            List all question papers
   GET    /api/question-papers/{id}       Get one question paper, including its questions
   POST   /api/question-papers/{id}/score Score a set of answers (per-chapter + overall)
+  PATCH  /api/question-papers/{id}/layout   Set header/footer/instructions display fields
+  GET    /api/question-papers/{id}/export-pdf   Download the paper as a PDF (student or answer-key copy)
   PATCH  /api/questions/{id}             Edit a question's text/options/answer/marks/difficulty
   POST   /api/questions/{id}/accept      Mark a question accepted; copies it into the Question Bank
   POST   /api/questions/{id}/regenerate  Ask Gemini for a fresh replacement from the same chapter
   DELETE /api/questions/{id}             Remove a question from its paper entirely
+  POST   /api/questions/manual           Add a teacher-written question directly to a paper
   GET    /api/question-bank              Browse the reusable question bank (filter by chapter/subject/standard/difficulty)
   POST   /api/question-bank/{id}/add-to-paper   Copy a bank question into a paper
   GET    /api/health             Health check
@@ -28,8 +31,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import List, Optional
 
+import re
+
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 
 from chapter_extractor import detect_chapters
@@ -37,6 +43,7 @@ from config import settings
 from database import SessionLocal, init_db
 from gemini_client import GeminiConfigError, embed_texts_for_storage
 from models_db import BankQuestion, Chapter, Document, Question, QuestionPaper
+from pdf_export import build_paper_pdf
 from pdf_processor import chunk_document, extract_pages
 from question_generator import compute_distribution, generate_mcqs_for_chapter
 from rag_agent import ask_question
@@ -48,6 +55,8 @@ from schemas import (
     ChapterOut,
     ChapterScoreOut,
     DocumentOut,
+    ManualQuestionCreateRequest,
+    PaperLayoutUpdateRequest,
     QuestionOut,
     QuestionPaperCreateRequest,
     QuestionPaperOut,
@@ -452,6 +461,7 @@ def create_question_paper(request: QuestionPaperCreateRequest, background_tasks:
             chapter_ids=request.chapter_ids,
             total_questions=request.total_questions,
             total_marks=total_marks,
+            duration_minutes=request.duration_minutes,
             pass_percentage=request.pass_percentage,
             distribution_mode=request.distribution_mode,
             difficulty=request.difficulty,
@@ -562,9 +572,116 @@ def score_question_paper(paper_id: str, request: ScoreRequest):
         db.close()
 
 
+@app.patch("/api/question-papers/{paper_id}/layout", response_model=QuestionPaperOut)
+def update_paper_layout(paper_id: str, request: PaperLayoutUpdateRequest):
+    """
+    Sets the header/footer display fields (PRD 7.3.5) — exam title, school
+    name, grade/section, date, instructions, footer text, teacher name.
+    Doesn't touch generation config (chapters, question count, difficulty,
+    etc.) — changing those after generation would invalidate the questions
+    already produced, so that's deliberately not exposed here.
+    """
+    db = SessionLocal()
+    try:
+        paper = db.query(QuestionPaper).filter(QuestionPaper.id == paper_id).first()
+        if paper is None:
+            raise HTTPException(404, "Question paper not found.")
+
+        updates = request.model_dump(exclude_unset=True)
+        for field, value in updates.items():
+            setattr(paper, field, value)
+
+        db.commit()
+        db.refresh(paper)
+        questions = (
+            db.query(Question).filter(Question.paper_id == paper_id).order_by(Question.order_index).all()
+        )
+        result = paper.to_dict()
+        result["questions"] = [q.to_dict() for q in questions]
+        return result
+    finally:
+        db.close()
+
+
+def _slugify_filename(value: str) -> str:
+    safe = re.sub(r'[^A-Za-z0-9 _-]', '', value or '')
+    safe = re.sub(r'\s+', ' ', safe).strip()
+    return safe[:80] or 'question-paper'
+
+
+@app.get("/api/question-papers/{paper_id}/export-pdf")
+def export_paper_pdf(paper_id: str, include_answers: bool = False):
+    """
+    Downloads the paper as a formatted PDF. include_answers=false (default)
+    is the student copy with no correct answers shown anywhere — the only
+    version that should ever be handed to a student, per PRD 7.3.2's "never
+    visible to students" rule. include_answers=true is the answer-key /
+    teacher copy.
+    """
+    db = SessionLocal()
+    try:
+        paper = db.query(QuestionPaper).filter(QuestionPaper.id == paper_id).first()
+        if paper is None:
+            raise HTTPException(404, "Question paper not found.")
+        questions = (
+            db.query(Question).filter(Question.paper_id == paper_id).order_by(Question.order_index).all()
+        )
+        if not questions:
+            raise HTTPException(400, "This paper has no questions yet to export.")
+
+        pdf_bytes = build_paper_pdf(
+            paper.to_dict(), [q.to_dict() for q in questions], include_answers=include_answers
+        )
+        title = paper.exam_title or paper.subject or 'question-paper'
+        safe_title = _slugify_filename(title)
+        filename_suffix = "answer-key" if include_answers else "student-copy"
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{safe_title}-{filename_suffix}.pdf"'},
+        )
+    finally:
+        db.close()
+
+
 # ---------------------------------------------------------------------------
 # Per-question review: accept / edit / regenerate / delete (PRD 7.3.2)
 # ---------------------------------------------------------------------------
+def _add_to_bank_if_new(db, q: "Question", paper: "QuestionPaper", source: str) -> bool:
+    """
+    Copies a Question into BankQuestion, unless an entry for the same text +
+    chapter already exists. Shared by accept_question and
+    create_manual_question — both are "a teacher vouching for this
+    question's content" moments per PRD 7.3.4 ("every question a teacher
+    creates or accepts"), just with different origins. Returns whether a new
+    entry was actually created.
+    """
+    already_banked = (
+        db.query(BankQuestion)
+        .filter(BankQuestion.question_text == q.question_text, BankQuestion.chapter_id == q.chapter_id)
+        .first()
+    )
+    if already_banked:
+        return False
+    db.add(
+        BankQuestion(
+            id=str(uuid.uuid4()),
+            doc_id=paper.doc_id if paper else None,
+            chapter_id=q.chapter_id,
+            chapter_title=q.chapter_title,
+            standard=paper.standard if paper else None,
+            subject=paper.subject if paper else None,
+            question_text=q.question_text,
+            options=q.options,
+            correct_option=q.correct_option,
+            marks=q.marks,
+            difficulty=q.difficulty,
+            source=source,
+        )
+    )
+    return True
+
+
 @app.patch("/api/questions/{question_id}", response_model=QuestionOut)
 def edit_question(question_id: str, request: QuestionUpdateRequest):
     """Direct teacher edit — wording, options, correct answer, marks, difficulty."""
@@ -611,34 +728,9 @@ def accept_question(question_id: str):
         if q is None:
             raise HTTPException(404, "Question not found.")
 
-        already_banked = (
-            db.query(BankQuestion)
-            .filter(BankQuestion.question_text == q.question_text, BankQuestion.chapter_id == q.chapter_id)
-            .first()
-        )
-        if q.accepted and already_banked:
-            return q.to_dict()
-
+        paper = db.query(QuestionPaper).filter(QuestionPaper.id == q.paper_id).first()
         q.accepted = True
-
-        if not already_banked:
-            paper = db.query(QuestionPaper).filter(QuestionPaper.id == q.paper_id).first()
-            db.add(
-                BankQuestion(
-                    id=str(uuid.uuid4()),
-                    doc_id=paper.doc_id if paper else None,
-                    chapter_id=q.chapter_id,
-                    chapter_title=q.chapter_title,
-                    standard=paper.standard if paper else None,
-                    subject=paper.subject if paper else None,
-                    question_text=q.question_text,
-                    options=q.options,
-                    correct_option=q.correct_option,
-                    marks=q.marks,
-                    difficulty=q.difficulty,
-                    source="ai_accepted",
-                )
-            )
+        _add_to_bank_if_new(db, q, paper, source="ai_accepted")
 
         db.commit()
         db.refresh(q)
@@ -712,6 +804,60 @@ def delete_question(question_id: str):
         db.delete(q)
         db.commit()
         return {"deleted": True, "id": question_id}
+    finally:
+        db.close()
+
+
+@app.post("/api/questions/manual", response_model=QuestionOut)
+def create_manual_question(request: ManualQuestionCreateRequest):
+    """
+    A teacher's own question, written from scratch (PRD 7.3.3) — "This lets
+    teachers blend AI-generated questions with their own questions." Lands
+    in the same paper, same per-question review UI as AI-generated ones.
+    Starts accepted=True: writing it yourself already *is* the review step
+    a generated question needs Accept for — there's no AI draft here to
+    approve. Also saved to the Question Bank, same as accepting a generated
+    one — PRD 7.3.4 covers questions a teacher "creates or accepts" equally.
+    """
+    db = SessionLocal()
+    try:
+        paper = db.query(QuestionPaper).filter(QuestionPaper.id == request.paper_id).first()
+        if paper is None:
+            raise HTTPException(404, "Question paper not found.")
+        if len(request.options) != 4:
+            raise HTTPException(400, "A question needs exactly 4 options.")
+        correct = request.correct_option.strip().upper()
+        if correct not in request.options:
+            raise HTTPException(400, f"correct_option must be one of {sorted(request.options.keys())}.")
+
+        chapter_title = None
+        if request.chapter_id:
+            chapter = db.query(Chapter).filter(Chapter.id == request.chapter_id).first()
+            if chapter is None:
+                raise HTTPException(400, "Unknown chapter id.")
+            if chapter.doc_id != paper.doc_id:
+                raise HTTPException(400, "That chapter doesn't belong to this paper's book.")
+            chapter_title = chapter.title
+
+        next_order = db.query(Question).filter(Question.paper_id == request.paper_id).count()
+        q = Question(
+            id=str(uuid.uuid4()),
+            paper_id=request.paper_id,
+            chapter_id=request.chapter_id,
+            chapter_title=chapter_title,
+            question_text=request.question_text,
+            options=request.options,
+            correct_option=correct,
+            marks=request.marks,
+            difficulty=request.difficulty,
+            accepted=True,
+            order_index=next_order,
+        )
+        db.add(q)
+        _add_to_bank_if_new(db, q, paper, source="manual")
+        db.commit()
+        db.refresh(q)
+        return q.to_dict()
     finally:
         db.close()
 

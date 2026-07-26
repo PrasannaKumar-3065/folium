@@ -7,3 +7,4 @@ chromadb
 google-genai
 numpy
 python-dotenv
+reportlab

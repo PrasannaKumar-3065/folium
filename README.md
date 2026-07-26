@@ -1,22 +1,24 @@
 # EduAI Knowledge Library — MVP
 
 This is a scoped-down MVP of the **Knowledge Library + AI Tutor** piece of the
-EduAI PRD, since extended with the **Question Paper Builder**'s AI generation,
-review, and reuse loop: upload PDF textbooks, get them parsed and chunked —
-with chapter-level structure detected — into a vector database, ask an AI
-tutor questions answered *only* from what's been uploaded with sources cited
-by chapter and page, and generate a chapter-scoped, distribution-aware MCQ
-question paper that a teacher can then accept, edit, regenerate, or delete
-question-by-question, with every accepted question saved into a reusable
-Question Bank.
+EduAI PRD, since extended through nearly all of the **Question Paper
+Builder**: upload PDF textbooks, get them parsed and chunked — with
+chapter-level structure detected — into a vector database, ask an AI tutor
+questions answered *only* from what's been uploaded with sources cited by
+chapter and page, and generate a chapter-scoped, distribution-aware MCQ
+question paper that a teacher can accept, edit, regenerate, delete, or
+supplement with their own hand-written questions — with every accepted or
+manually-written question saved into a reusable Question Bank — then lay out
+with a header/footer and export as a print-ready PDF (student copy or answer
+key).
 
 Deliberately **not** included (out of scope for now, all buildable later on
 top of the same backend): auth/login, multi-tenant schools, teacher/admin/
-student roles, lesson plans, manual question entry and paper header/footer
-layout/scheduling (the remaining pieces of the question paper builder), the
-test engine, and reporting. The frontend is intentionally bare — plain
-HTML/CSS/JS, no build step, no framework — so nearly all the work is in the
-backend.
+student roles, lesson plans, scheduling a paper to a grade/section/roster
+(the one remaining piece of the question paper builder — it needs
+Grade/Section/Student to exist, which need auth first), the test engine, and
+reporting. The frontend is intentionally bare — plain HTML/CSS/JS, no build
+step, no framework — so nearly all the work is in the backend.
 
 ## Architecture
 
@@ -147,11 +149,50 @@ question  ->  Gemini agentic tool-calling loop  ->  search_knowledge_base tool
   real student attempts, i.e. the Test Engine — adding it later is a new
   column on an existing table, not a redesign.
 
-  What's still ahead in the Question Paper Builder itself (PRD §7.3.3,
-  §7.3.5-7.3.6, not this slice): manual question entry (though it now has an
-  obvious home — the same per-question review UI, as a "write your own"
-  alternative to Accept/Regenerate) and paper header/footer/layout/
-  scheduling.
+  What's still ahead in the Question Paper Builder itself (PRD §7.3.6 only
+  — everything else in this section is now built, see below).
+- **Manual question entry, PRD §7.3.3:** `POST /api/questions/manual` — a
+  teacher's own question, same paper, same review UI as generated ones, as
+  a "+ Write your own question" card at the end of the questions list.
+  Starts `accepted=True` (writing it yourself already *is* the review step)
+  and is saved to the Question Bank exactly like accepting a generated
+  question is — PRD 7.3.4 covers "creates or accepts" equally, so both
+  paths now share one `_add_to_bank_if_new()` helper rather than
+  duplicating that logic.
+- **Paper layout, PRD §7.3.5:** `PATCH /api/question-papers/{id}/layout`
+  sets exam title, school name, grade/section, date, instructions, footer
+  text, and teacher name — all optional, all rendered with sensible
+  fallbacks at export time rather than defaulted at save time, so the
+  stored data always reflects what a teacher actually typed. Deliberately
+  doesn't touch generation config (chapters, question count, difficulty):
+  changing those after generation would invalidate questions already
+  produced, so that's not exposed through this endpoint.
+- **PDF export, PRD §7.3.5's "preview exactly as a student would see it"
+  taken further into an actual downloadable file:** `pdf_export.py` (using
+  reportlab's Platypus API) renders the paper as a proper formatted
+  document — header table, instructions, numbered questions with per-
+  question marks, page-numbered footer. Two modes via `?include_answers=`:
+  the student copy (default) never renders `correct_option` anywhere in the
+  code path, not just hidden in the UI — the same guarantee PRD 7.3.2 asks
+  for ("visible only to the teacher, never to students"); the answer-key
+  copy marks each correct option inline for grading by eye. All question
+  text is XML-escaped before going into a reportlab Paragraph (they use an
+  HTML-like markup internally, so raw `<`, `>`, `&` from generated content
+  can otherwise break the build) — verified with a question deliberately
+  containing `<tags>`, `&`, quotes, and a `^` exponent, then reading the
+  actual text back out of the generated PDF to confirm it rendered as
+  literal text. Also worth knowing: reportlab's built-in fonts don't cover
+  Unicode sub/superscript glyphs (₂, ²) — they silently render as boxes —
+  so AI-generated chemistry/math notation should stick to plain text (H2O,
+  x^2) rather than actual Unicode sub/superscript characters.
+- **Scheduling, PRD §7.3.6 — deliberately not built yet, and not a partial
+  attempt either:** the PRD's own scheduling flow is "assign to
+  grade/section/students, THEN pick a time." Assignment needs
+  Grade/Section/Student to exist, and they don't without auth. Adding just
+  the timing half now — a start time with no roster to point it at — would
+  be an orphaned field with nothing to schedule *for*. Better to build the
+  whole flow together once there's a real audience to assign, rather than
+  half-build it now and rework it later.
 - **Background processing:** FastAPI `BackgroundTasks` — no Celery/Redis for
   an MVP at this scale. `process_document()` is a plain function, so lifting
   it into a real task queue later is a small, contained change (see Scaling
@@ -193,20 +234,27 @@ that's the only URL you need. Interactive API docs are at
    The answer is grounded in whatever's been uploaded, with the source
    filename, chapter (when one was detected), and page listed underneath.
 3. **Question Papers** — pick a ready book, tick the chapters to draw from,
-   set a question count, difficulty, pass percentage, and distribution mode,
-   then Generate. The page polls until generation finishes and shows the
-   actual per-chapter split, a note if the pass-floor guarantee couldn't be
-   fully honored for every chapter, and the generated questions — each with
-   **Accept**, **Edit**, **Regenerate**, and **Delete** buttons. Edit opens
-   an inline form for the wording, all 4 options, the correct answer, and
-   marks. Regenerate asks Gemini for one fresh replacement from the same
-   chapter and leaves the question untouched if that call fails. Past papers
-   are listed below and can be reopened the same way.
-4. **Question Bank** — every question you Accept lands here automatically.
-   Filter by book, chapter, and difficulty, then use "Add to selected paper"
-   to copy any bank question straight into another paper (pick the target
-   paper from the dropdown first) — it arrives already marked Accepted,
-   since reusing it is itself a form of vetting it.
+   set a question count, difficulty, duration, pass percentage, and
+   distribution mode, then Generate. The page polls until generation
+   finishes and shows the actual per-chapter split, a note if the
+   pass-floor guarantee couldn't be fully honored for every chapter, and
+   the generated questions — each with **Accept**, **Edit**,
+   **Regenerate**, and **Delete** buttons. Edit opens an inline form for
+   the wording, all 4 options, the correct answer, and marks. Regenerate
+   asks Gemini for one fresh replacement from the same chapter and leaves
+   the question untouched if that call fails. Below the questions, "**+
+   Write your own question**" adds a teacher-authored question with no AI
+   involved. The collapsible **Paper layout** panel sets the exam title,
+   school name, grade/section, date, instructions, footer, and teacher name
+   — save it, then use **Download student copy (PDF)** or **Download
+   answer key (PDF)** at the top of the paper to get a print-ready file
+   reflecting whatever's been set. Past papers are listed below and can be
+   reopened the same way.
+4. **Question Bank** — every question you Accept or write manually lands
+   here automatically. Filter by book, chapter, and difficulty, then use
+   "Add to selected paper" to copy any bank question straight into another
+   paper (pick the target paper from the dropdown first) — it arrives
+   already marked Accepted, since reusing it is itself a form of vetting it.
 
 ## API
 
@@ -222,10 +270,13 @@ that's the only URL you need. Interactive API docs are at
 | GET | `/api/question-papers` | List all question papers (summary, no questions) |
 | GET | `/api/question-papers/{id}` | Get one paper's full detail, including its generated questions |
 | POST | `/api/question-papers/{id}/score` | `{"answers": {question_id: option}}` -> marks per chapter + overall |
+| PATCH | `/api/question-papers/{id}/layout` | Set exam title/school name/grade-section/date/instructions/footer/teacher name |
+| GET | `/api/question-papers/{id}/export-pdf` | Download as PDF; `?include_answers=true` for the answer key |
 | PATCH | `/api/questions/{id}` | Edit a question's text/options/correct answer/marks/difficulty |
 | POST | `/api/questions/{id}/accept` | Mark a question accepted; copies it into the Question Bank |
 | POST | `/api/questions/{id}/regenerate` | Ask Gemini for one fresh replacement from the same chapter |
 | DELETE | `/api/questions/{id}` | Remove a question from its paper entirely |
+| POST | `/api/questions/manual` | Add a teacher-written question directly to a paper; also banks it |
 | GET | `/api/question-bank` | Browse the bank; optional `chapter_id`/`subject`/`standard`/`difficulty` filters |
 | POST | `/api/question-bank/{id}/add-to-paper` | `{"paper_id": "..."}` -> copies a bank question into that paper |
 | GET | `/api/health` | Health check |
@@ -326,3 +377,22 @@ and increments the bank entry's `times_used` — plus filtering the bank by
 chapter. What's **not** verified: the live Gemini call inside
 `regenerate_question()`'s replacement generation — same limitation as
 above, needs a real API key.
+
+**Manual entry, layout, and PDF export**: found and fixed one real gap while
+auditing this batch — manual question creation set `accepted=True` but
+wasn't copying into the Question Bank, even though the PRD covers questions
+a teacher "creates or accepts" equally; both paths now share one
+`_add_to_bank_if_new()` helper instead of duplicating that logic, and manual
+entry populating the bank is now verified directly. Layout was verified by
+setting every field and confirming it round-trips through the API. PDF
+export was verified by seeding a paper with two questions whose text
+deliberately included `<tags>`, `&`, quotes, and a `^` exponent, exporting
+both modes, and reading the actual text back out of the resulting PDFs
+(not just eyeballing them) to confirm: the special characters rendered as
+literal text rather than breaking the build or being interpreted as markup;
+the student copy contains no correct-answer markings anywhere; the answer
+key correctly marks every correct option, including the manually-added
+question; and a scan for stray control characters in the extracted text
+came back clean. What's **not** verified: how the layout and export
+endpoints behave once real multi-paragraph or image-heavy question content
+shows up (only tested against realistic but short MCQ text).

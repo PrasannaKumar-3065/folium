@@ -89,14 +89,23 @@ class Chapter(Base):
 class QuestionPaper(Base):
     """
     One row per question-paper generation request (PRD 7.3.1). Holds the
-    teacher's setup choices and the resulting distribution plan; the
-    generated questions themselves are separate Question rows below.
+    teacher's setup choices, layout (PRD 7.3.5), and the resulting
+    distribution plan; the generated questions themselves are separate
+    Question rows below.
 
     No teacher/school/tenant ownership field yet — auth and multi-tenancy
     are deliberately deferred (see /areas/ai-school-platform.md). Nothing
     here should need restructuring when that lands: it's the same shape as
     standard/subject on Document — add teacher_id/tenant_id alongside what's
     here and filter by it.
+
+    No scheduling fields (PRD 7.3.6) yet either, and deliberately so: the
+    PRD's own scheduling flow is "assign to grade/section/students, THEN
+    pick a time" — assignment needs Grade/Section/Student to exist, which
+    they don't without auth. Adding just the timing half now (a start time
+    with nothing to point it at) would be an orphaned field with nothing to
+    schedule for; better to build the whole flow together once there's a
+    real audience to assign.
     """
 
     __tablename__ = "question_papers"
@@ -109,6 +118,7 @@ class QuestionPaper(Base):
     chapter_ids = Column(JSON, nullable=False)  # the chapters the teacher selected, as a list
     total_questions = Column(Integer, nullable=False)
     total_marks = Column(Integer, nullable=False)
+    duration_minutes = Column(Integer, nullable=True)  # PRD 7.3.1 setup field
     pass_percentage = Column(Float, nullable=False)
     distribution_mode = Column(String, nullable=False)  # "equal" | "random"
     difficulty = Column(String, nullable=False, default="balanced")  # "easy" | "balanced" | "challenging"
@@ -126,6 +136,18 @@ class QuestionPaper(Base):
     status = Column(String, nullable=False, default="generating")
     error_message = Column(Text, nullable=True)
 
+    # --- Paper layout (PRD 7.3.5) — all optional, sensible defaults are
+    # applied at PDF-render time (see pdf_export.py) rather than stored here,
+    # so an unset field always reflects "teacher hasn't customized this yet"
+    # rather than a guessed value silently becoming the record of truth.
+    exam_title = Column(String, nullable=True)         # e.g. "Unit Test 1"
+    school_name = Column(String, nullable=True)
+    grade_section = Column(String, nullable=True)       # e.g. "12A" — no Section model yet
+    exam_date = Column(String, nullable=True)           # free text — no date-format enforcement in an MVP
+    instructions_text = Column(Text, nullable=True)     # shown once, top of paper
+    footer_text = Column(String, nullable=True)         # e.g. "All the Best"
+    teacher_name = Column(String, nullable=True)
+
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(
         DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow
@@ -140,6 +162,7 @@ class QuestionPaper(Base):
             "chapter_ids": self.chapter_ids,
             "total_questions": self.total_questions,
             "total_marks": self.total_marks,
+            "duration_minutes": self.duration_minutes,
             "pass_percentage": self.pass_percentage,
             "distribution_mode": self.distribution_mode,
             "difficulty": self.difficulty,
@@ -147,6 +170,13 @@ class QuestionPaper(Base):
             "distribution_feasible": self.distribution_feasible,
             "status": self.status,
             "error_message": self.error_message,
+            "exam_title": self.exam_title,
+            "school_name": self.school_name,
+            "grade_section": self.grade_section,
+            "exam_date": self.exam_date,
+            "instructions_text": self.instructions_text,
+            "footer_text": self.footer_text,
+            "teacher_name": self.teacher_name,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }

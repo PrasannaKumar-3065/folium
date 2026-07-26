@@ -62,6 +62,7 @@ class QuestionPaperCreateRequest(BaseModel):
     total_questions: int = Field(..., gt=0)
     # Defaults to total_questions (1 mark each) if omitted.
     total_marks: Optional[int] = Field(None, gt=0)
+    duration_minutes: Optional[int] = Field(None, gt=0)
     distribution_mode: Literal["equal", "random"]
     pass_percentage: float = Field(..., gt=0, le=100)
     difficulty: Literal["easy", "balanced", "challenging"] = "balanced"
@@ -88,6 +89,7 @@ class QuestionPaperOut(BaseModel):
     chapter_ids: List[str]
     total_questions: int
     total_marks: int
+    duration_minutes: Optional[int] = None
     pass_percentage: float
     distribution_mode: str
     difficulty: str
@@ -95,9 +97,26 @@ class QuestionPaperOut(BaseModel):
     distribution_feasible: Optional[bool] = None
     status: str
     error_message: Optional[str] = None
+    exam_title: Optional[str] = None
+    school_name: Optional[str] = None
+    grade_section: Optional[str] = None
+    exam_date: Optional[str] = None
+    instructions_text: Optional[str] = None
+    footer_text: Optional[str] = None
+    teacher_name: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
     questions: List[QuestionOut] = []
+
+
+class PaperLayoutUpdateRequest(BaseModel):
+    exam_title: Optional[str] = None
+    school_name: Optional[str] = None
+    grade_section: Optional[str] = None
+    exam_date: Optional[str] = None
+    instructions_text: Optional[str] = None
+    footer_text: Optional[str] = None
+    teacher_name: Optional[str] = None
 
 
 class ScoreRequest(BaseModel):
@@ -148,3 +167,13 @@ class BankQuestionOut(BaseModel):
 
 class AddBankQuestionRequest(BaseModel):
     paper_id: str
+
+
+class ManualQuestionCreateRequest(BaseModel):
+    paper_id: str
+    chapter_id: Optional[str] = None
+    question_text: str = Field(..., min_length=1)
+    options: Dict[str, str]
+    correct_option: str
+    marks: int = Field(1, gt=0)
+    difficulty: Optional[str] = None

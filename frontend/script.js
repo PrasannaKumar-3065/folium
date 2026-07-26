@@ -100,12 +100,6 @@ async function loadDocuments() {
     if (!res.ok) return;
     const docs = await res.json();
     renderDocuments(docs);
-    const hasProcessing = docs.some((doc) => doc.status === 'processing');
-    if (hasProcessing) {
-      startDocumentPolling();
-    } else {
-      stopDocumentPolling();
-    }
   } catch (err) {
     console.error('Failed to load documents', err);
   }
@@ -192,21 +186,8 @@ async function deleteDocument(id) {
   }
 }
 
-const DOCS_POLL_MS = 15000;
-let docsPollInterval = null;
-
-function startDocumentPolling() {
-  if (docsPollInterval !== null) return;
-  docsPollInterval = setInterval(loadDocuments, DOCS_POLL_MS);
-}
-
-function stopDocumentPolling() {
-  if (docsPollInterval === null) return;
-  clearInterval(docsPollInterval);
-  docsPollInterval = null;
-}
-
-// Poll periodically only when there are documents still processing.
+// Poll periodically so "processing" -> "ready"/"failed" shows up without a manual refresh.
+setInterval(loadDocuments, 4000);
 loadDocuments();
 
 /* ---------------- Ask ---------------- */
@@ -333,11 +314,13 @@ paperForm.addEventListener('submit', async (e) => {
   if (!chapterIds.length) { paperMessage.textContent = 'Select at least one chapter.'; return; }
 
   const totalMarksVal = document.getElementById('paper-total-marks').value;
+  const durationVal = document.getElementById('paper-duration').value;
   const body = {
     doc_id: docId,
     chapter_ids: chapterIds,
     total_questions: Number(document.getElementById('paper-total-questions').value),
     total_marks: totalMarksVal ? Number(totalMarksVal) : null,
+    duration_minutes: durationVal ? Number(durationVal) : null,
     distribution_mode: paperForm.querySelector('input[name="distribution"]:checked').value,
     pass_percentage: Number(document.getElementById('paper-pass-percentage').value),
     difficulty: document.getElementById('paper-difficulty').value,
@@ -400,6 +383,43 @@ function renderPaperResult(paper) {
       ? `<p class="feasibility-warning">With this many chapters and a ${paper.pass_percentage}% pass mark, the paper couldn't guarantee every chapter its own full pass-floor — the split above is the closest even fallback instead.</p>`
       : '';
 
+  const hasQuestions = (paper.questions || []).length > 0;
+  const exportLinks = hasQuestions
+    ? `
+    <div class="export-links">
+      <a href="${API_BASE}/question-papers/${paper.id}/export-pdf" target="_blank" class="export-link">Download student copy (PDF)</a>
+      <a href="${API_BASE}/question-papers/${paper.id}/export-pdf?include_answers=true" target="_blank" class="export-link export-link-key">Download answer key (PDF)</a>
+    </div>`
+    : '';
+
+  const layoutFields = [
+    ['exam_title', 'Exam title', 'e.g. Unit Test 1'],
+    ['school_name', 'School name', ''],
+    ['grade_section', 'Grade / Section', 'e.g. 10 A'],
+    ['exam_date', 'Date', 'e.g. 25 July 2026'],
+    ['teacher_name', 'Teacher name', ''],
+    ['footer_text', 'Footer text', 'e.g. All the Best!'],
+  ];
+  const layoutHtml = `
+    <details class="layout-panel">
+      <summary>Paper layout (header / footer)</summary>
+      <form id="paper-layout-form">
+        ${layoutFields
+          .map(
+            ([key, label, placeholder]) => `
+          <label>${label}
+            <input type="text" class="layout-field" data-field="${key}" value="${escapeHtml(paper[key] || '')}" placeholder="${placeholder}">
+          </label>`
+          )
+          .join('')}
+        <label>Instructions
+          <textarea class="layout-field" data-field="instructions_text" rows="2">${escapeHtml(paper.instructions_text || '')}</textarea>
+        </label>
+        <button type="submit">Save Layout</button>
+        <p class="layout-message"></p>
+      </form>
+    </details>`;
+
   const questionsHtml = (paper.questions || [])
     .map(
       (q, i) => `
@@ -447,24 +467,135 @@ function renderPaperResult(paper) {
     )
     .join('');
 
+  const manualFormHtml = `
+    <div class="question-card manual-add-card">
+      <button id="show-manual-form-btn" type="button">+ Write your own question</button>
+      <form id="manual-question-form" class="question-edit-form hidden">
+        <label>Chapter
+          <select id="manual-chapter-select">
+            ${(paper.chapter_ids || [])
+              .map((cid) => {
+                const q = (paper.questions || []).find((x) => x.chapter_id === cid);
+                return `<option value="${cid}">${escapeHtml(q ? q.chapter_title : cid)}</option>`;
+              })
+              .join('')}
+          </select>
+        </label>
+        <textarea id="manual-question-text" rows="2" placeholder="Question text" required></textarea>
+        ${['A', 'B', 'C', 'D']
+          .map((key) => `
+          <label class="edit-option-label">${key}.
+            <input type="text" class="manual-option" data-key="${key}" placeholder="Option ${key}" required>
+          </label>`)
+          .join('')}
+        <label>Correct option
+          <select id="manual-correct-option">
+            ${['A', 'B', 'C', 'D'].map((key) => `<option value="${key}">${key}</option>`).join('')}
+          </select>
+        </label>
+        <label>Marks <input type="number" id="manual-marks" min="1" value="1"></label>
+        <div class="question-actions">
+          <button type="button" id="manual-add-btn" class="q-save-btn">Add Question</button>
+          <button type="button" id="cancel-manual-form-btn" class="q-cancel-btn">Cancel</button>
+        </div>
+        <p id="manual-question-message" class="q-action-message"></p>
+      </form>
+    </div>`;
+
   paperResult.innerHTML = `
     <h3>Paper status: <span class="status status-${escapeHtml(paper.status)}">${escapeHtml(paper.status)}</span></h3>
     ${paper.error_message ? `<p class="error-text">${escapeHtml(paper.error_message)}</p>` : ''}
+    ${exportLinks}
+    ${layoutHtml}
     <p><strong>Distribution (${escapeHtml(paper.distribution_mode)}):</strong></p>
     <ul>${planRows}</ul>
     ${feasibilityNote}
     ${questionsHtml ? `<h3>Questions (${paper.questions.length})</h3>${questionsHtml}` : ''}
+    ${paper.chapter_ids && paper.chapter_ids.length ? manualFormHtml : ''}
   `;
 
   wireQuestionCardActions(paper.id);
+  wireLayoutForm(paper.id);
+  wireManualQuestionForm(paper.id);
+}
+
+function wireLayoutForm(paperId) {
+  const form = document.getElementById('paper-layout-form');
+  if (!form) return;
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const msgEl = form.querySelector('.layout-message');
+    const body = {};
+    form.querySelectorAll('.layout-field').forEach((el) => { body[el.dataset.field] = el.value; });
+    const res = await fetch(`${API_BASE}/question-papers/${paperId}/layout`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (res.ok) { msgEl.textContent = 'Saved.'; refreshCurrentPaper(paperId); }
+    else { msgEl.textContent = 'Could not save layout.'; }
+  });
+}
+
+function wireManualQuestionForm(paperId) {
+  const showBtn = document.getElementById('show-manual-form-btn');
+  const form = document.getElementById('manual-question-form');
+  if (!showBtn || !form) return;
+
+  showBtn.addEventListener('click', () => {
+    showBtn.classList.add('hidden');
+    form.classList.remove('hidden');
+  });
+  document.getElementById('cancel-manual-form-btn').addEventListener('click', () => {
+    form.classList.add('hidden');
+    showBtn.classList.remove('hidden');
+  });
+
+  // Use an explicit button click handler to avoid accidental native form submits
+  const addBtn = document.getElementById('manual-add-btn');
+  if (!addBtn) return;
+  addBtn.addEventListener('click', async (e) => {
+    const msgEl = document.getElementById('manual-question-message');
+    msgEl.textContent = '';
+    addBtn.disabled = true;
+    try {
+      const options = {};
+      form.querySelectorAll('.manual-option').forEach((input) => { options[input.dataset.key] = input.value; });
+      const body = {
+        paper_id: paperId,
+        chapter_id: document.getElementById('manual-chapter-select').value || null,
+        question_text: document.getElementById('manual-question-text').value,
+        options,
+        correct_option: document.getElementById('manual-correct-option').value,
+        marks: Number(document.getElementById('manual-marks').value),
+      };
+      const res = await fetch(`${API_BASE}/questions/manual`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (res.ok) {
+        refreshCurrentPaper(paperId);
+      } else {
+        msgEl.textContent = (await res.json()).detail || 'Could not add question.';
+      }
+    } catch (err) {
+      msgEl.textContent = 'Request failed: ' + err.message;
+    } finally {
+      addBtn.disabled = false;
+    }
+  });
 }
 
 function wireQuestionCardActions(paperId) {
   paperResult.querySelectorAll('.question-card').forEach((card) => {
     const questionId = card.dataset.questionId;
+    // Skip the manual-add card and any cards that are not actual questions
+    if (!questionId) return;
     const msgEl = card.querySelector('.q-action-message');
 
-    card.querySelector('.q-accept-btn').addEventListener('click', async (e) => {
+    const acceptBtn = card.querySelector('.q-accept-btn');
+    if (acceptBtn) acceptBtn.addEventListener('click', async (e) => {
       e.target.disabled = true;
       try {
         const res = await fetch(`${API_BASE}/questions/${questionId}/accept`, { method: 'POST' });
@@ -474,8 +605,8 @@ function wireQuestionCardActions(paperId) {
         e.target.disabled = false;
       }
     });
-
-    card.querySelector('.q-regen-btn').addEventListener('click', async (e) => {
+    const regenBtn = card.querySelector('.q-regen-btn');
+    if (regenBtn) regenBtn.addEventListener('click', async (e) => {
       e.target.disabled = true;
       msgEl.textContent = 'Asking Gemini for a replacement…';
       try {
@@ -489,7 +620,8 @@ function wireQuestionCardActions(paperId) {
       }
     });
 
-    card.querySelector('.q-delete-btn').addEventListener('click', async (e) => {
+    const deleteBtn = card.querySelector('.q-delete-btn');
+    if (deleteBtn) deleteBtn.addEventListener('click', async (e) => {
       if (!confirm('Remove this question from the paper?')) return;
       e.target.disabled = true;
       const res = await fetch(`${API_BASE}/questions/${questionId}`, { method: 'DELETE' });
